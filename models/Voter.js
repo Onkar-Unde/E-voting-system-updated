@@ -1,15 +1,53 @@
 const mongoose = require('mongoose');
 
 const VoterSchema = new mongoose.Schema({
-  aadhaarHash: { type: String, required: true, unique: true },
-  identityHash: { type: String, required: true, unique: true },
-  fingerprintHash: { type: String, required: true },
-  faceEmbedding: { type: [Number], required: true },
-  registeredAt: { type: Date, default: Date.now },
-  isVerifiedOnce: { type: Boolean, default: false },
-  hasVoted: { type: Boolean, default: false },
-  registrationCenter: { type: String },
-  verificationLogs: [{ ts: Date, status: String, message: String }]
-});
+  aadhaarHash: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  identityHash: {
+    type: String,
+    required: true
+  },
+  fingerprintHash: {
+    type: String,
+    required: true
+  },
+  faceEmbedding: {
+    type: [Number], // Array of numbers
+    default: []
+  },
+  registrationCenter: {
+    type: String,
+    default: "CENTER-001"
+  },
+  hasVoted: {
+    type: Boolean,
+    default: false
+  },
 
-module.exports = mongoose.model('Voter', VoterSchema);
+  // Personal Details
+  name: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true
+  },
+  phone: {
+    type: String,
+    required: true
+  },
+  dob: {
+    type: String,
+    required: true
+  },
+  address: {
+    type: String,
+    required: true
+  }
+}, { timestamps: true });
+
+module.exports = mongoose.model("Voter", VoterSchema);

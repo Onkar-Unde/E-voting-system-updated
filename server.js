@@ -8,8 +8,11 @@ const { ethers } = require('ethers');
 const jwt = require('jsonwebtoken');
 
 const Voter = require('./models/Voter');
+const Vote = require("./models/Vote");
 const Candidate = require('./models/Candidate');
 const Audit = require('./models/Audit');
+const Party = require("./models/Party");
+
 
 const PORT = process.env.PORT || 4000;
 const MONGO = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/evote';
@@ -81,127 +84,219 @@ async function requireFogVerification(req,res,next){
 /**
  ✅ Registration endpoint
 */
-app.post('/api/register', async(req,res)=>{
-  try{
-    const {aadhaarHash, centerId, faceEmbedding, fingerprintSecret}=req.body;
-    if(!aadhaarHash||!centerId||!faceEmbedding||!fingerprintSecret)
-      return res.status(400).json({error:"Missing fields"});
+app.post('/api/register', async (req, res) => {
+  try {
+    const {
+      aadhaar, name, email, phone, dob, address, fingerprintId
+    } = req.body;
 
-    if(await Voter.findOne({aadhaarHash}))
-      return res.status(400).json({ error:"Already registered" });
+    if (!aadhaar || !name || !email || !phone || !dob || !address || !fingerprintId)
+      return res.status(400).json({ error: "All fields required" });
 
+    // Hash Aadhaar Number
+    const aadhaarHash = ethers.keccak256(ethers.toUtf8Bytes(aadhaar));
+
+    // Check duplicate Voter
+    const exist = await Voter.findOne({
+      $or: [{ aadhaarHash }, { phone }, { email }]
+    });
+    if (exist) return res.status(400).json({ error: "Already registered" });
+
+    const fingerprintSecret = fingerprintId;
     const fingerprintHash = hashToken(fingerprintSecret);
-    const identityHash = makeIdentityHash(aadhaarHash,fingerprintSecret);
 
+    const faceEmbedding = [0.15, 0.27, 0.33, 0.42];
+
+    const identityHash = makeIdentityHash(aadhaarHash, fingerprintSecret);
+
+    if (!contract)
+      return res.status(500).json({ error: "Blockchain not configured" });
+
+    // ✅ Store on Blockchain
     const tx = await contract.registerIdentity(identityHash);
     await tx.wait();
 
     await Voter.create({
-      aadhaarHash, identityHash, fingerprintHash,
-      faceEmbedding, registrationCenter:centerId,
-      hasVoted:false
+      aadhaarHash,
+      identityHash,
+      fingerprintHash,
+      faceEmbedding,
+      registrationCenter: "CENTER-001",
+      hasVoted: false,
+      name,
+      email,
+      phone,
+      dob,
+      address
     });
 
-    res.json({
-      ok:true,
-      message:"Registration success",
-      txHash:tx.hash
+    return res.json({
+      ok: true,
+      message: "Registration success ✅ Stored on Blockchain",
+      txHash: tx.hash
     });
-  }catch(e){
-    res.status(500).json({error:"server error",details:e.message});
+
+  } catch (err) {
+    console.error("register error", err);
+    res.status(500).json({ error: "server error", details: err.message });
   }
 });
+
 
 /**
  ✅ Login with biometric
 */
-app.post('/api/auth/login', async(req,res)=>{
-  try{
-    console.log("LOGIN REQ", req.headers);
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    console.log("LOGIN REQ");
 
-    if(!req.headers["x-center-auth"])
-      return res.status(403).json({error:"Login only allowed at Election Center"});
+    const { aadhaar, fingerprintId } = req.body;
 
-    const {aadhaarHash,faceEmbedding,fingerprintSecret}=req.body;
-    if(!aadhaarHash||!faceEmbedding||!fingerprintSecret)
-      return res.status(400).json({error:"Missing fields"});
+    if (!aadhaar || !fingerprintId)
+      return res.status(400).json({ error: "Aadhaar & Fingerprint required" });
 
-    const voter = await Voter.findOne({aadhaarHash});
-    if(!voter) return res.status(404).json({error:"Not registered"});
+    // ✅ Aadhaar hash lookup
+    const aadhaarHash = ethers.keccak256(ethers.toUtf8Bytes(aadhaar));
+    const voter = await Voter.findOne({ aadhaarHash });
 
-    const sim = cosineSimilarity(voter.faceEmbedding,faceEmbedding);
-    if(sim < 0.80) return res.status(403).json({error:"Face mismatch",sim});
+    if (!voter)
+      return res.status(404).json({ error: "Not registered" });
 
-    if(hashToken(fingerprintSecret)!==voter.fingerprintHash)
-      return res.status(403).json({error:"Fingerprint mismatch"});
+    // ✅ Fingerprint hash match
+    const fingerprintHash = hashToken(fingerprintId);
 
-    // ✅ Blockchain double check
-    if(!await contract.isRegistered(voter.identityHash))
-      return res.status(403).json({error:"Identity missing on blockchain"});
+    if (fingerprintHash !== voter.fingerprintHash) {
+      return res.status(403).json({ error: "Fingerprint mismatch" });
+    }
 
-    // ✅ Mark Fog verification success
-    voter.isVerifiedOnce = true;
-    await voter.save();
+    console.log("Biometric Verified ✅");
 
+    // ✅ Blockchain identity check
+    const registered = await contract.isRegistered(voter.identityHash);
+    if (!registered)
+      return res.status(403).json({ error: "Identity not on blockchain" });
+
+    // ✅ Generate JWT token
     const token = jwt.sign(
-      { voterId:voter._id.toString(), aadhaarHash:voter.aadhaarHash },
-      JWT_SECRET, {expiresIn:JWT_EXP}
+      { id: voter._id, aadhaarHash: voter.aadhaarHash },
+      JWT_SECRET,
+      { expiresIn: "2h" }
     );
 
-    res.json({ok:true,jwt:token});
+    return res.json({
+      ok: true,
+      message: "Biometric Login Success ✅",
+      token
+    });
+
+  } catch (err) {
+    console.error("LOGIN ERR", err);
+    res.status(500).json({ error: "Server Error", details: err.message });
   }
-  catch(e){ res.status(500).json({error:"server error",details:e.message}); }
 });
+
 
 /**
  ✅ Cast Vote
 */
-app.post('/api/vote', requireAuth, requireFogVerification, async(req,res)=>{
-  try{
-    const voter = await Voter.findById(req.user.voterId);
-    if(!voter) return res.status(404).json({error:"Voter missing"});
+app.post('/api/vote', requireAuth, requireFogVerification, async (req, res) => {
+  try {
+    const voter = await Voter.findById(req.user.id);
+    if (!voter) return res.status(404).json({ error: "Voter missing" });
 
-    if(voter.hasVoted) return res.status(400).json({error:"Already voted"});
+    if (voter.hasVoted)
+      return res.status(400).json({ error: "Already voted" });
 
     const count = Number(await contract.candidatesCount());
+    const candidateId = parseInt(req.body.candidateId);
 
-    if(req.body.candidateId<0 || req.body.candidateId>=count)
-      return res.status(400).json({error:"Invalid candidate"});
+    if (candidateId < 0 || candidateId >= count)
+      return res.status(400).json({ error: "Invalid candidate" });
 
+    // ✅ Get candidate details (name stored directly in schema)
+    const candidate = await Candidate.findOne({ candidateId });
+    if (!candidate) return res.status(404).json({ error: "Candidate not found" });
+
+    // ✅ Blockchain transaction
     const tx = await contract.vote(
-      parseInt(req.body.candidateId),
+      candidateId,
       voter.identityHash,
-      {gasLimit:400000}
+      { gasLimit: 400000 }
     );
     await tx.wait();
 
-    voter.hasVoted=true;
+    // ✅ Update voter DB state
+    voter.hasVoted = true;
     await voter.save();
 
-    res.json({ok:true,message:"Vote recorded",txHash:tx.hash});
+    // ✅ Store vote record in DB
+    await Vote.create({
+      voter: voter._id,
+      candidateId,
+      candidateName: candidate.name, // ✅ Store name
+      votingCenter: voter.registrationCenter, // ✅ Center stored from voter model
+      txHash: tx.hash
+    });
+
+    res.json({
+      ok: true,
+      message: "Vote recorded ✅",
+      txHash: tx.hash
+    });
+
+  } catch (e) {
+    console.error("Vote Error:", e);
+    res.status(500).json({ error: "server error", details: e.message });
   }
-  catch(e){ res.status(500).json({error:"server error",details:e.message}); }
+});
+
+// ✅ Get all parties
+app.get('/api/admin/parties', async (req, res) => {
+  if (req.headers["x-api-key"] !== ADMIN_API_KEY)
+    return res.status(401).json({ error: "unauthorized" });
+
+  res.json({ parties: await Party.find() });
+});
+
+// ✅ Add Party
+app.post('/api/admin/addParty', async (req, res) => {
+  if (req.headers["x-api-key"] !== ADMIN_API_KEY)
+    return res.status(401).json({ error: "unauthorized" });
+
+  const { name, leader, symbol } = req.body;
+  const party = await Party.create({ name, leader, symbol });
+
+  res.json({ ok: true, party });
 });
 
 /**
  ✅ Admin API
 */
-app.get('/api/admin/candidates', async(req,res)=>{
-  if(req.headers["x-api-key"]!==ADMIN_API_KEY)
-    return res.status(401).json({error:"unauthorized"});
-  res.json({candidates: await Candidate.find()});
+
+app.get('/api/admin/candidates', async (req, res) => {
+  if (req.headers["x-api-key"] !== ADMIN_API_KEY)
+    return res.status(401).json({ error: "unauthorized" });
+
+  res.json({ candidates: await Candidate.find().populate("party") });
 });
 
-app.post('/api/admin/addCandidate', async(req,res)=>{
-  if(req.headers["x-api-key"]!==ADMIN_API_KEY)
-    return res.status(401).json({error:"unauthorized"});
+app.post('/api/admin/addCandidate', async (req, res) => {
+  if (req.headers["x-api-key"] !== ADMIN_API_KEY)
+    return res.status(401).json({ error: "unauthorized" });
 
-  const tx = await contract.addCandidate(req.body.name);
+  const { name, party } = req.body;
+
+  const tx = await contract.addCandidate(name);
   await tx.wait();
 
-  const id = Number(await contract.candidatesCount())-1;
-  await Candidate.create({candidateId:id,name:req.body.name});
-  res.json({ok:true,candidateId:id});
+  const id = Number(await contract.candidatesCount()) - 1;
+
+  const candidate = await Candidate.create({
+    candidateId: id,
+    name,
+    party
+  });
+  res.json({ ok: true, candidate });
 });
 
 app.listen(PORT, ()=>console.log(`✅ Server running on ${PORT}`));

@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
+
 const CandidateSchema = new mongoose.Schema({
-  candidateId: { type: String, unique: true },
-  name: { type: String, required: true }
+  candidateId: Number,
+  name: String,
+  party: {
+    type: String, // Store party name directly
+    required: true
+  }
 });
-module.exports = mongoose.model('Candidate', CandidateSchema);
+
+module.exports = mongoose.model("Candidate", CandidateSchema);
