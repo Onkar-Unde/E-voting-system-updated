@@ -1,0 +1,17 @@
+{
+  "name": "evote-frontend-test",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.9.4"
+  },
+  "devDependencies": {
+    "vite": "^7.1.12"
+  }
+}
