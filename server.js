@@ -74,11 +74,29 @@ function requireAuth(req,res,next){
 
 // ✅ Fog Node validation middleware
 async function requireFogVerification(req,res,next){
-  const voter = await Voter.findById(req.user.voterId);
-  if(!voter || !voter.isVerifiedOnce){
-    return res.status(403).json({error:"Biometric verification required"});
+  try {
+    const { fingerprintId, faceScanVerified } = req.body;
+
+    if (!fingerprintId)
+      return res.status(403).json({ error: "Fingerprint missing" });
+
+    const voter = await Voter.findById(req.user.id);
+    if (!voter) return res.status(404).json({ error: "Voter not found" });
+
+    // ✅ Validate Fingerprint
+    if (hashToken(fingerprintId) !== voter.fingerprintHash)
+      return res.status(403).json({ error: "Fingerprint mismatch ❌" });
+
+    // ✅ Validate Face (UI already confirms)
+    if (!faceScanVerified)
+      return res.status(403).json({ error: "Facial verification failed ❌" });
+
+    console.log("Biometric + Face ✅ Verified");
+    next();
+
+  } catch (e) {
+    res.status(500).json({ error: "Biometric verification error", details: e.message });
   }
-  next();
 }
 
 /**
@@ -213,11 +231,10 @@ app.post('/api/vote', requireAuth, requireFogVerification, async (req, res) => {
     if (candidateId < 0 || candidateId >= count)
       return res.status(400).json({ error: "Invalid candidate" });
 
-    // ✅ Get candidate details (name stored directly in schema)
     const candidate = await Candidate.findOne({ candidateId });
-    if (!candidate) return res.status(404).json({ error: "Candidate not found" });
+    if (!candidate)
+      return res.status(404).json({ error: "Candidate not found" });
 
-    // ✅ Blockchain transaction
     const tx = await contract.vote(
       candidateId,
       voter.identityHash,
@@ -225,16 +242,14 @@ app.post('/api/vote', requireAuth, requireFogVerification, async (req, res) => {
     );
     await tx.wait();
 
-    // ✅ Update voter DB state
     voter.hasVoted = true;
     await voter.save();
 
-    // ✅ Store vote record in DB
     await Vote.create({
       voter: voter._id,
       candidateId,
-      candidateName: candidate.name, // ✅ Store name
-      votingCenter: voter.registrationCenter, // ✅ Center stored from voter model
+      candidateName: candidate.name,
+      votingCenter: voter.registrationCenter,
       txHash: tx.hash
     });
 
@@ -250,6 +265,55 @@ app.post('/api/vote', requireAuth, requireFogVerification, async (req, res) => {
   }
 });
 
+app.get("/api/results", async (req, res) => {
+  try {
+    const results = await Vote.aggregate([
+      {
+        $group: {
+          _id: "$candidateName",
+          totalVotes: { $sum: 1 }
+        }
+      },
+      { $sort: { totalVotes: -1 } }
+    ]);
+
+    res.json({
+      ok: true,
+      results
+    });
+
+  } catch (e) {
+    console.error("Results Error:", e);
+    res.status(500).json({ error: "server error", details: e.message });
+  }
+});
+
+app.get("/api/results/center/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const results = await Vote.aggregate([
+      { $match: { votingCenter: id } },
+      {
+        $group: {
+          _id: "$candidateName",
+          totalVotes: { $sum: 1 }
+        }
+      },
+      { $sort: { totalVotes: -1 } }
+    ]);
+
+    res.json({
+      ok: true,
+      votingCenter: id,
+      results
+    });
+
+  } catch (e) {
+    console.error("Center Results Error:", e);
+    res.status(500).json({ error: "server error", details: e.message });
+  }
+});
 // ✅ Get all parties
 app.get('/api/admin/parties', async (req, res) => {
   if (req.headers["x-api-key"] !== ADMIN_API_KEY)
